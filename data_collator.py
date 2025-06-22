@@ -1,33 +1,59 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List
 from transformers import PreTrainedTokenizerBase
+from qwen_vl_utils import process_vision_info
 
 @dataclass
-class MultimodalDataCollator:
+class LLaVACoTDataCollator:
     tokenizer: PreTrainedTokenizerBase
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        images = [f["image"] for f in features]
-        
-        input_ids_features = [{"input_ids": f["input_ids"]} for f in features]
-        padded_input_ids = self.tokenizer.pad(
-            input_ids_features,
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        texts = [
+            self.processor.apply_chat_template(
+                sample["conversations"],
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            for sample in batch
+        ]
+        texts_all = [
+            self.processor.apply_chat_template(
+                sample["conversations_all"],
+                tokenize=False,
+                add_generation_prompt=False
+            )
+            for sample in batch
+        ]
+
+        images = [process_vision_info(sample["conversations"])[0] for sample in batch]
+
+        model_inputs = self.processor(
+            text=texts,
+            images=images,
             padding=True,
             return_tensors="pt",
-            padding_side="left",
+            padding_side="left"
         )
 
-        input_ids_all_features = [{"input_ids": f["input_ids_all"]} for f in features]
-        padded_input_ids_all = self.tokenizer.pad(
-            input_ids_all_features,
+        input_ids_all = self.processor(
+            text=texts,
+            images=images,
             padding=True,
             return_tensors="pt",
             padding_side="left"
         )
         
         return {
-            "input_ids": padded_input_ids["input_ids"],
-            "attention_mask": padded_input_ids["attention_mask"],
-            "input_ids_all": padded_input_ids_all["input_ids"],
-            "images": images,
+            "inputs": {
+                "input_ids":      model_inputs["input_ids"],
+                "attention_mask": model_inputs["attention_mask"],
+                "pixel_values":   model_inputs["pixel_values"],
+                "image_grid_thw": model_inputs["image_grid_thw"],
+            },
+            "inputs_all": {
+                "input_ids":      input_ids_all["input_ids"],
+                "attention_mask": input_ids_all["attention_mask"],
+                "pixel_values":   input_ids_all["pixel_values"],
+                "image_grid_thw": input_ids_all["image_grid_thw"],
+            }
         }

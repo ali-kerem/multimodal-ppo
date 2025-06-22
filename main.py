@@ -6,7 +6,7 @@ from dataset import LLaVACoT
 from trl import PPOConfig, AutoModelForCausalLMWithValueHead
 from MultimodalPPOTrainer import MultimodalPPOTrainer
 from llava.model.builder import load_pretrained_model
-from data_collator import MultimodalDataCollator
+from data_collator import LLaVACoTDataCollator
 
 warnings.filterwarnings("ignore")
 
@@ -45,7 +45,7 @@ def main():
 
     optimizer = torch.optim.AdamW(actor_model.parameters(), lr=1e-5)
 
-    data_collator = MultimodalDataCollator(tokenizer=actor_processor)
+    data_collator = LLaVACoTDataCollator(tokenizer=actor_processor)
 
     # 4. Initialize PPO Config
     ppo_config = {"mini_batch_size": 1, "batch_size": 1, "report_to": "none"}
@@ -56,6 +56,7 @@ def main():
                              processing_class=reward_tokenizer,
                              train_dataset=dataset,
                              reward_model=reward_model,
+                             value_model=value_model,
                              optimizers=(optimizer, None),
                              data_collator=data_collator)
 
