@@ -2,6 +2,7 @@ import os
 import json
 from torch.utils.data import Dataset
 from PIL import Image
+from datasets import load_dataset
 
 
 class LLaVACoT(Dataset):
@@ -30,4 +31,40 @@ class LLaVACoT(Dataset):
             "conversations": data_dict["conversations"][:1],
             "conversations_all": data_dict["conversations_all"],
             "image": image,
+        }
+
+
+class Geometry3KDataset(Dataset):
+    def __init__(
+        self,
+        data_path: str,
+        split: str = "train"
+    ):
+        self.dataset = load_dataset(data_path)[split]
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int):
+        sample = self.dataset[idx]
+
+        conv = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": sample["images"][0]
+                    },
+                    {
+                        "type": "text",
+                        "text": sample["problem"]
+                    }
+                ]
+            }
+        ]
+
+        return {
+            "conversations": conv,
+            "answer": sample["answer"]
         }
