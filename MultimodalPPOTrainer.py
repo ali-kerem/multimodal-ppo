@@ -70,6 +70,8 @@ from trl.trainer.utils import (
     truncate_response,
 )
 
+from custom.custom_utils import batch_generation
+
 
 if is_peft_available():
     from peft import PeftConfig, PeftModel, get_peft_model
