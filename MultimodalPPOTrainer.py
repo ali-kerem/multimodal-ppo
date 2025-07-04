@@ -53,7 +53,6 @@ from trl.models.utils import unwrap_model_for_generation
 from trl.trainer.ppo_config import PPOConfig
 from trl.trainer.utils import (
     OnlineTrainerState,
-    batch_generation,
     disable_dropout_in_model,
     empty_cache,
     exact_div,
@@ -61,7 +60,6 @@ from trl.trainer.utils import (
     forward,
     generate_model_card,
     get_comet_experiment_url,
-    get_reward,
     log_table_to_comet_experiment,
     peft_module_casting_to_bf16,
     prepare_deepspeed,
@@ -69,8 +67,9 @@ from trl.trainer.utils import (
     selective_log_softmax,
     truncate_response,
 )
+from trl.trainer.ppo_trainer import PolicyAndValueWrapper
 
-from custom.custom_utils import batch_generation
+from custom.custom_utils import batch_generation, get_reward
 
 
 if is_peft_available():
