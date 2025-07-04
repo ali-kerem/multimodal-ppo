@@ -2,72 +2,56 @@ import torch
 import numpy as np
 from typing import Optional
 from transformers import GenerationConfig
+from trl.trainer.utils import first_true_indices, pad
 
-def pad(
-    tensors: list[torch.Tensor],
-    padding_value: int = 0,
-    padding_side: str = "right",
-    pad_to_multiple_of: Optional[int] = None,
-) -> torch.Tensor:
+def get_reward(
+    model: torch.nn.Module, query_responses: torch.Tensor, pad_token_id: int, context_length: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Pads a list of tensors to the same shape along the first dimension.
+    Computes the reward logits and the rewards for a given model and query responses.
 
     Args:
-        tensors (`list[torch.Tensor]`):
-            List of input tensors to pad.
-        padding_value (`int`):
-            Value to use for padding. Default is 0.
-        padding_side (`str`):
-            Side on which to add padding. Must be 'left' or 'right'. Default is 'right'.
-        pad_to_multiple_of (`int`, *optional*, defaults to `None`):
-            If set will pad the sequence to a multiple of the provided value.
+        model (`torch.nn.Module`):
+            The model used to compute the reward logits.
+        query_responses (`torch.Tensor`):
+            The tensor containing the query responses.
+        pad_token_id (`int`):
+            The token ID representing the pad token.
+        context_length (`int`):
+            The length of the context in the query responses.
 
     Returns:
-        `torch.Tensor`:
-            A single tensor containing the padded tensors.
-
-    Examples:
-    ```python
-    >>> import torch
-
-    >>> pad([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-    tensor([[1, 2, 3],
-            [4, 5, 0]])
-
-    >>> pad([torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6]])])
-    tensor([[[1, 2],
-            [3, 4]],
-            [[5, 6],
-            [0, 0]]])
-    ```
+        tuple:
+            - `reward_logits` (`torch.Tensor`):
+                The logits for the reward model.
+            - `final_rewards` (`torch.Tensor`):
+                The final rewards for each query response.
+            - `sequence_lengths` (`torch.Tensor`):
+                The lengths of the sequences in the query responses.
     """
-    # Determine the maximum shape for each dimension
-    output_shape = np.max([t.shape for t in tensors], 0).tolist()
-
-    # Apply pad_to_multiple_of to the first (sequence) dimension
-    if pad_to_multiple_of is not None:
-        remainder = output_shape[0] % pad_to_multiple_of
-        if remainder != 0:
-            output_shape[0] += pad_to_multiple_of - remainder
-
-    # Create an output tensor filled with the padding value
-    output = torch.full((len(tensors), *output_shape), padding_value, dtype=tensors[0].dtype, device=tensors[0].device)
-
-    for i, t in enumerate(tensors):
-        if padding_side == "left":
-            seq_start = output_shape[0] - t.shape[0]
-        elif padding_side == "right":
-            seq_start = 0
-        else:
-            raise ValueError("padding_side must be 'left' or 'right'")
-
-        # Define the slices
-        seq_slice = slice(seq_start, seq_start + t.shape[0])
-        slices = (seq_slice,) + tuple(slice(0, s) for s in t.shape[1:])
-        output[i][slices] = t
-
-    return output
-
+    attention_mask = query_responses != pad_token_id
+    position_ids = attention_mask.cumsum(1) - attention_mask.long()  # exclusive cumsum
+    lm_backbone = getattr(model, model.base_model_prefix)
+    input_ids = torch.masked_fill(query_responses, ~attention_mask, 0)
+    output = lm_backbone(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        return_dict=True,
+        output_hidden_states=True,
+        use_cache=False,  # otherwise mistral-based RM would error out
+    )
+    reward_logits = model.score(output.hidden_states[-1])
+    sequence_lengths = first_true_indices(query_responses[:, context_length:] == pad_token_id) - 1 + context_length
+    # https://github.com/huggingface/transformers/blob/dc68a39c8111217683bf49a4912d0c9018bab33d/src/transformers/models/gpt2/modeling_gpt2.py#L1454
+    return (
+        reward_logits,
+        reward_logits[
+            torch.arange(reward_logits.size(0), device=reward_logits.device),
+            sequence_lengths,
+        ].squeeze(-1),
+        sequence_lengths,
+    )
 
 def generate(
     lm_backbone: torch.nn.Module, queries: torch.Tensor, pad_token_id: int, generation_config: GenerationConfig
