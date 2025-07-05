@@ -69,7 +69,7 @@ from trl.trainer.utils import (
 )
 from trl.trainer.ppo_trainer import PolicyAndValueWrapper
 
-from custom.custom_utils import batch_generation, get_reward
+from custom.custom_utils import generate, get_reward
 
 
 if is_peft_available():
@@ -316,6 +316,8 @@ class MultimodalPPOTrainer(PPOTrainer):
             top_k=0.0,
             top_p=1.0,
             do_sample=True,
+            pad_token_id=processing_class.tokenizer.pad_token_id,
+            eos_token_id=processing_class.tokenizer.eos_token_id,
         )
 
         accelerator.print("===training policy===")
@@ -362,8 +364,8 @@ class MultimodalPPOTrainer(PPOTrainer):
             self.state.episode += 1 * args.batch_size
             data = next(iter_dataloader)
             with torch.no_grad():
-                queries = data["input_ids"].to(device)
-                context_length = queries.shape[1]
+                queries = {k: v.to(device) for k, v in data["inputs"].items()}
+                context_length = queries["input_ids"].shape[1]
                 responses = []
                 postprocessed_responses = []
                 logprobs = []
@@ -374,11 +376,9 @@ class MultimodalPPOTrainer(PPOTrainer):
                 with unwrap_model_for_generation(
                     self.model, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
                 ) as unwrapped_model:
-                    query_responses, logitss = batch_generation(
+                    query_responses, logitss = generate(
                         unwrapped_model.policy,
                         queries,
-                        args.local_rollout_forward_batch_size,
-                        processing_class.pad_token_id,
                         generation_config,
                     )
 
