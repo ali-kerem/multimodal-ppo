@@ -290,7 +290,7 @@ class MultimodalPPOTrainer(PPOTrainer):
             if self.ref_model is None:
                 if not self.is_peft_model:
                     raise ValueError("No reference model and model is not a Peft model.")
-            else:
+            elif not hasattr(self.ref_model, "hf_device_map"):
                 self.ref_model = self.ref_model.to(self.accelerator.device)
             if self.reward_model is not None:
                 self.reward_model = self.reward_model.to(self.accelerator.device)
