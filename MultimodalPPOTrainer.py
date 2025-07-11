@@ -57,7 +57,6 @@ from trl.trainer.utils import (
     empty_cache,
     exact_div,
     first_true_indices,
-    forward,
     generate_model_card,
     get_comet_experiment_url,
     log_table_to_comet_experiment,
@@ -69,7 +68,7 @@ from trl.trainer.utils import (
 )
 from trl.trainer.ppo_trainer import PolicyAndValueWrapper
 
-from custom.custom_utils import generate, get_reward, get_value
+from custom.custom_utils import generate, get_reward, get_value, forward
 
 
 if is_peft_available():
@@ -382,11 +381,17 @@ class MultimodalPPOTrainer(PPOTrainer):
                 del logitss
                 empty_cache()
 
+                ref_inputs = { # TODO: This may need transferring to the correct device
+                    "input_ids": query_responses,
+                    "pixel_values": queries["pixel_values"],
+                    "image_grid_thw": queries["image_grid_thw"]
+                }
+
                 if ref_policy is None:
                     with self.null_ref_context():
-                        ref_output = forward(model.policy, query_responses, processing_class.tokenizer.pad_token_id)
+                        ref_output = forward(model.policy, ref_inputs, processing_class.tokenizer.pad_token_id)
                 else:
-                    ref_output = forward(ref_policy, query_responses, processing_class.tokenizer.pad_token_id)
+                    ref_output = forward(ref_policy, ref_inputs, processing_class.tokenizer.pad_token_id)
                 ref_logits = ref_output.logits[:, context_length - 1 : -1]
                 ref_logits /= args.temperature + 1e-7
                 ref_logprob = selective_log_softmax(ref_logits, response)

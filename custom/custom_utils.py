@@ -1,6 +1,7 @@
 import torch
 from typing import List
 from transformers import GenerationConfig
+from transformers.utils import ModelOutput
 
 def get_reward(response_text: List[str], answer_text: List[str]) -> List[float]:
     rewards = []
@@ -46,6 +47,38 @@ def get_value(
     )
     value_logits = model.score(output.hidden_states[-1])
     return value_logits
+
+def forward(
+    model: torch.nn.Module,
+    inputs: dict[str, torch.Tensor],
+    pad_token_id: int,
+) -> ModelOutput:
+    """
+    Performs a forward pass through the model with the given query responses and pad token ID.
+
+    Args:
+        model (`torch.nn.Module`):
+            The model to perform the forward pass.
+        inputs (`dict[str, torch.Tensor]`):
+            The dictionary containing the input tensors (input_ids, pixel_values, image_grid_thw).
+        pad_token_id (`int`):
+            The token ID representing the pad token.
+
+    Returns:
+        `ModelOutput`:
+            The output of the model, including hidden states.
+    """
+    attention_mask = inputs["input_ids"] != pad_token_id
+    position_ids = attention_mask.cumsum(1) - attention_mask.long()
+    inputs["input_ids"] = torch.masked_fill(inputs["input_ids"], ~attention_mask, 0)
+    return model(
+        **inputs,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        return_dict=True,
+        output_hidden_states=True,
+    )
+
 
 def generate(
     lm_backbone: torch.nn.Module, queries: dict[str, torch.Tensor], generation_config: GenerationConfig
