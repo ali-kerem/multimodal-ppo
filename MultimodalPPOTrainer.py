@@ -488,12 +488,18 @@ class MultimodalPPOTrainer(PPOTrainer):
                             micro_batch_inds = mini_batch_inds[micro_batch_start:micro_batch_end]
                             mb_advantage = advantages[micro_batch_inds]
                             mb_responses = responses[micro_batch_inds]
-                            mb_query_responses = query_responses[micro_batch_inds]
+                            # mb_query_responses = query_responses[micro_batch_inds]
+                            mb_inputs = { # TODO: This may need transferring to the correct device
+                                "input_ids": query_responses[micro_batch_inds],
+                                "pixel_values": queries["pixel_values"], # TODO: keep like this for now
+                                "image_grid_thw": queries["image_grid_thw"][micro_batch_inds]
+                            }
+
                             mb_logprobs = logprobs[micro_batch_inds]
                             mb_return = returns[micro_batch_inds]
                             mb_values = values[micro_batch_inds]
 
-                            output, vpred_temp = forward(model, mb_query_responses, processing_class.tokenizer.pad_token_id)
+                            output, vpred_temp = forward(model, mb_inputs, processing_class.tokenizer.pad_token_id)
                             logits = output.logits[:, context_length - 1 : -1]
                             logits /= args.temperature + 1e-7
                             new_logprobs = selective_log_softmax(logits, mb_responses)
@@ -550,7 +556,7 @@ class MultimodalPPOTrainer(PPOTrainer):
                         output, vpred_temp, logits, new_logprobs, vpred, vpredclipped,
                         vf_losses1, vf_losses2, vf_loss, vf_clipfrac, logprobs_diff, ratio, pg_losses, pg_losses2, pg_loss_max,
                         pg_loss, loss, pg_clipfrac, prob_dist, entropy, approxkl, mb_return,
-                        mb_advantage, mb_values, mb_responses, mb_query_responses, mb_logprobs,
+                        mb_advantage, mb_values, mb_responses, mb_inputs, mb_logprobs,
                     )
                     # fmt: on
                     empty_cache()
