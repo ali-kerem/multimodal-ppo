@@ -1,10 +1,10 @@
 import os
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-from dataset import LLaVACoT
+from dataset import LLaVACoT, Geometry3KDataset
 from trl import PPOConfig, AutoModelForCausalLMWithValueHead
 from MultimodalPPOTrainer import MultimodalPPOTrainer
-from data_collator import LLaVACoTDataCollator
+from data_collator import LLaVACoTDataCollator, Geometry3KDataCollator
 
 
 def main():
@@ -16,9 +16,9 @@ def main():
     # 5. Initialize PPO trainer
 
     # 1. Load dataset
-    home_dir = os.path.expanduser("~")
-    data_path = os.path.join(home_dir, "/datasets/LLaVA-CoT-100k/train.json")
-    dataset = LLaVACoT(data_path=data_path)
+    data_path = "hiyouga/geometry3k"
+    train_dataset = Geometry3KDataset(data_path=data_path, split="train")
+    eval_dataset = Geometry3KDataset(data_path=data_path, split="validation")
 
     # 2. Load Actor model
     actor_model_name = "Qwen/Qwen2.5-VL-3B-Instruct"
@@ -33,7 +33,7 @@ def main():
 
     optimizer = torch.optim.AdamW(actor_model.parameters(), lr=1e-5)
 
-    data_collator = LLaVACoTDataCollator(tokenizer=actor_processor)
+    data_collator = Geometry3KDataCollator(tokenizer=actor_processor)
 
     # 4. Initialize PPO Config
     ppo_config = {"mini_batch_size": 1, "batch_size": 1, "report_to": "none"}
@@ -42,7 +42,8 @@ def main():
                              model=actor_model,
                              ref_model=ref_model,
                              processing_class=actor_processor,
-                             train_dataset=dataset,
+                             train_dataset=train_dataset,
+                             eval_dataset=eval_dataset,
                              reward_model=None,
                              value_model=value_model,
                              optimizers=(optimizer, None),
