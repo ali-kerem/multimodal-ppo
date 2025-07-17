@@ -92,6 +92,7 @@ class MultimodalPPOTrainer(PPOTrainer):
         ref_model: Optional[nn.Module],
         train_dataset: Dataset,
         value_model: nn.Module,
+        accelerator: Accelerator,
         reward_model: Optional[nn.Module] = None,
         data_collator: Optional[DataCollatorWithPadding] = None,
         eval_dataset: Optional[Union[Dataset, dict[str, Dataset]]] = None,
@@ -100,6 +101,9 @@ class MultimodalPPOTrainer(PPOTrainer):
         callbacks: Optional[list[TrainerCallback]] = None,
         peft_config: Optional["PeftConfig"] = None,
     ) -> None:
+
+        self.accelerator = accelerator
+
         if ref_model is model:
             raise ValueError(
                 "`model` and `ref_model` cannot be the same object. If you want `ref_model` to be the "
@@ -175,8 +179,6 @@ class MultimodalPPOTrainer(PPOTrainer):
         #########
         if args.total_episodes is None:  # allow the users to define episodes in terms of epochs.
             args.total_episodes = int(args.num_train_epochs * self.train_dataset_len)
-        accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
-        self.accelerator = accelerator
         args.world_size = accelerator.num_processes
         args.local_batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
         args.micro_batch_size = int(args.per_device_train_batch_size * args.world_size)

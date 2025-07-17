@@ -1,10 +1,12 @@
-import os
 import torch
+from accelerate import Accelerator
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-from dataset import LLaVACoT, Geometry3KDataset
-from trl import PPOConfig, AutoModelForCausalLMWithValueHead
+from trl import AutoModelForCausalLMWithValueHead
+
 from MultimodalPPOTrainer import MultimodalPPOTrainer
+from dataset import LLaVACoT, Geometry3KDataset
 from data_collator import LLaVACoTDataCollator, Geometry3KDataCollator
+from custom.custom_ppo_config import CustomPPOConfig
 
 
 def main():
@@ -37,7 +39,9 @@ def main():
 
     # 4. Initialize PPO Config
     ppo_config = {"mini_batch_size": 1, "batch_size": 1, "report_to": "none"}
-    config = PPOConfig(**ppo_config)
+    config = CustomPPOConfig(**ppo_config)
+    accelerator = Accelerator(gradient_accumulation_steps=config.gradient_accumulation_steps)
+
     ppo_trainer = MultimodalPPOTrainer(args=config,
                              model=actor_model,
                              ref_model=ref_model,
@@ -47,7 +51,8 @@ def main():
                              reward_model=None,
                              value_model=value_model,
                              optimizers=(optimizer, None),
-                             data_collator=data_collator)
+                             data_collator=data_collator,
+                             accelerator=accelerator)
 
     ppo_trainer.train()
 
