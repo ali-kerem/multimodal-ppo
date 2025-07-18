@@ -1,3 +1,5 @@
+import types
+
 import torch
 from accelerate import Accelerator
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
@@ -32,6 +34,13 @@ def main():
 
     # 4. Load Value model
     value_model = AutoModelForCausalLMWithValueHead.from_pretrained(actor_model, torch_dtype="auto", device_map="auto")
+    value_model.base_model_prefix = actor_model.base_model_prefix
+    setattr(value_model, value_model.base_model_prefix, value_model.pretrained_model)
+
+    def score(self, hidden_states):
+        return self.v_head(hidden_states)
+    
+    value_model.score = types.MethodType(score, value_model)
 
     optimizer = torch.optim.AdamW(actor_model.parameters(), lr=1e-5)
 
