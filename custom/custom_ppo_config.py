@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from transformers import PPOConfig
+from trl import PPOConfig
 from accelerate import PartialState
 
 @dataclass
