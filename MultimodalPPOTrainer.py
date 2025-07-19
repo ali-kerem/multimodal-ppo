@@ -650,6 +650,8 @@ class MultimodalPPOTrainer(PPOTrainer):
             top_k=0.0,
             top_p=1.0,
             do_sample=True,
+            pad_token_id=processing_class.tokenizer.pad_token_id,
+            eos_token_id=processing_class.tokenizer.eos_token_id,
         )
 
         table = defaultdict(list)
@@ -657,34 +659,33 @@ class MultimodalPPOTrainer(PPOTrainer):
             self.model, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
         ) as unwrapped_model:
             for batch in self.eval_dataloader:
-                query = batch["input_ids"]
+                query = {k: v.to(self.accelerator.device) for k, v in batch["inputs"].items()}
                 with torch.no_grad():
-                    context_length = query.shape[1]
-                    query_response, _ = batch_generation(
+                    context_length = query["input_ids"].shape[1]
+                    query_response, _ = generate(
                         unwrapped_model.policy,
                         query,
-                        query.shape[0],
-                        processing_class.pad_token_id,
                         generation_config,
                     )
                     response = query_response[:, context_length:]
                     postprocessed_response = response
                     if self.stop_token_id is not None:  # handle the edge case when stop_token_id exists but is 0
                         postprocessed_response = truncate_response(
-                            self.stop_token_id, processing_class.pad_token_id, response
+                            self.stop_token_id, processing_class.tokenizer.pad_token_id, response
                         )
                     table["query"].extend(
-                        gather_object(processing_class.batch_decode(query, skip_special_tokens=True))
+                        gather_object(processing_class.batch_decode(query["input_ids"], skip_special_tokens=True))
                     )
                     table["model response"].extend(
                         gather_object(processing_class.batch_decode(postprocessed_response))
                     )
 
-                    postprocessed_query_response = torch.cat((query, postprocessed_response), 1)
-                    _, score, _ = get_reward(
-                        self.reward_model, postprocessed_query_response, processing_class.pad_token_id, context_length
+                    response_text = processing_class.batch_decode(response)
+                    score = get_reward(
+                        response_text, batch["answer"]
                     )
-                    table["score"].extend(self.accelerator.gather_for_metrics(score).float().cpu().numpy())
+                    table["score"].extend(gather_object(score.tolist()))
+                    table["answer"].extend(gather_object(batch["answer"]))
 
                 if sampling:
                     break
