@@ -70,6 +70,7 @@ from trl.trainer.ppo_trainer import PolicyAndValueWrapper
 
 from custom.custom_utils import generate, get_reward, get_value, forward
 
+from utils import get_pixel_values
 
 if is_peft_available():
     from peft import PeftConfig, PeftModel, get_peft_model
@@ -377,54 +378,63 @@ class MultimodalPPOTrainer(PPOTrainer):
                         queries,
                         generation_config,
                     )
+                for i in range(0, queries["input_ids"].shape[0], args.local_rollout_forward_batch_size):
+                    query_response = query_responses[i : i + args.local_rollout_forward_batch_size]
+                    response = query_response[:, context_length:]
+                    logits = logitss[i : i + args.local_rollout_forward_batch_size]
+                    logprob = selective_log_softmax(logits, response)
+                    del logits
+                    empty_cache()
 
-                response = query_responses[:, context_length:]
-                logprob = selective_log_softmax(logitss, response)
-                del logitss
-                empty_cache()
+                    rollout_batch_inds = torch.arange(i, i + args.local_rollout_forward_batch_size)
+                    ref_inputs = {
+                        "input_ids": query_response,
+                        "pixel_values": get_pixel_values(queries, rollout_batch_inds),
+                        "image_grid_thw": queries["image_grid_thw"][rollout_batch_inds]
+                    }
 
-                ref_inputs = { # TODO: This may need transferring to the correct device
-                    "input_ids": query_responses,
-                    "pixel_values": queries["pixel_values"],
-                    "image_grid_thw": queries["image_grid_thw"]
-                }
+                    if ref_policy is None:
+                        with self.null_ref_context():
+                            ref_output = forward(model.policy, ref_inputs, processing_class.tokenizer.pad_token_id)
+                    else:
+                        ref_output = forward(ref_policy, ref_inputs, processing_class.tokenizer.pad_token_id)
+                    ref_logits = ref_output.logits[:, context_length - 1 : -1]
+                    ref_logits /= args.temperature + 1e-7
+                    ref_logprob = selective_log_softmax(ref_logits, response)
+                    del ref_output, ref_logits
+                    empty_cache()
 
-                if ref_policy is None:
-                    with self.null_ref_context():
-                        ref_output = forward(model.policy, ref_inputs, processing_class.tokenizer.pad_token_id)
-                else:
-                    ref_output = forward(ref_policy, ref_inputs, processing_class.tokenizer.pad_token_id)
-                ref_logits = ref_output.logits[:, context_length - 1 : -1]
-                ref_logits /= args.temperature + 1e-7
-                ref_logprob = selective_log_softmax(ref_logits, response)
-                del ref_output, ref_logits
-                empty_cache()
+                    # Response Processing 1. truncate response after the first occurrence of `stop_token_id`
+                    postprocessed_response = response
+                    if self.stop_token_id is not None:  # handle the edge case when stop_token_id exists but is 0
+                        postprocessed_response = truncate_response(
+                            self.stop_token_id, processing_class.tokenizer.pad_token_id, response
+                        )
 
-                # Response Processing 1. truncate response after the first occurrence of `stop_token_id`
-                postprocessed_response = response
-                if self.stop_token_id is not None:  # handle the edge case when stop_token_id exists but is 0
-                    postprocessed_response = truncate_response(
-                        self.stop_token_id, processing_class.tokenizer.pad_token_id, response
+                    # Response Processing 2. run reward model on the truncated responses
+                    sequence_length = first_true_indices(postprocessed_response == processing_class.tokenizer.pad_token_id) - 1
+                    unwrapped_value_model = accelerator.unwrap_model(model).value_model
+                    full_value = get_value(
+                        unwrapped_value_model, query_response, processing_class.tokenizer.pad_token_id
                     )
+                    value = full_value[:, context_length - 1 : -1].squeeze(-1)
+                    response_text = processing_class.batch_decode(response)
+                    score = get_reward(response_text, data["answer"]).to(logprob.device)
 
-                # Response Processing 2. run reward model on the truncated responses
-                sequence_length = first_true_indices(postprocessed_response == processing_class.tokenizer.pad_token_id) - 1
-                unwrapped_value_model = accelerator.unwrap_model(model).value_model
-                full_value = get_value(
-                    unwrapped_value_model, query_responses, processing_class.tokenizer.pad_token_id
-                )
-                value = full_value[:, context_length - 1 : -1].squeeze(-1)
-                response_text = processing_class.batch_decode(response)
-                score = get_reward(response_text, data["answer"]).to(logprob.device)
-
-                # Keeping this to track the changes more clearly
-                responses = response
-                postprocessed_responses = postprocessed_response
-                logprobs = logprob
-                ref_logprobs = ref_logprob
-                sequence_lengths = sequence_length
-                scores = score
-                values = value
+                    responses.append(response)
+                    postprocessed_responses.append(postprocessed_response)
+                    logprobs.append(logprob)
+                    ref_logprobs.append(ref_logprob)
+                    sequence_lengths.append(sequence_length)
+                    scores.append(score)
+                    values.append(value)
+                responses = torch.cat(responses, 0)
+                postprocessed_responses = torch.cat(postprocessed_responses, 0)
+                logprobs = torch.cat(logprobs, 0)
+                ref_logprobs = torch.cat(ref_logprobs, 0)
+                sequence_lengths = torch.cat(sequence_lengths, 0)
+                scores = torch.cat(scores, 0)
+                values = torch.cat(values, 0)
 
                 del (logprob, ref_logprob, full_value, value, score, unwrapped_model)
                 empty_cache()
@@ -490,10 +500,10 @@ class MultimodalPPOTrainer(PPOTrainer):
                             micro_batch_inds = mini_batch_inds[micro_batch_start:micro_batch_end]
                             mb_advantage = advantages[micro_batch_inds]
                             mb_responses = responses[micro_batch_inds]
-                            # mb_query_responses = query_responses[micro_batch_inds]
-                            mb_inputs = { # TODO: This may need transferring to the correct device
+                            pixel_values = get_pixel_values(queries, micro_batch_inds)
+                            mb_inputs = {
                                 "input_ids": query_responses[micro_batch_inds],
-                                "pixel_values": queries["pixel_values"], # TODO: keep like this for now
+                                "pixel_values": pixel_values,
                                 "image_grid_thw": queries["image_grid_thw"][micro_batch_inds]
                             }
 
