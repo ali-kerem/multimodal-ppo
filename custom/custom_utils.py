@@ -7,7 +7,11 @@ def get_reward(response_text: List[str], answer_text: List[str]) -> List[float]:
     rewards = []
     for response, answer in zip(response_text, answer_text):
         idx = response.find("Answer:")
-        response = response[idx + len("Answer:"):]
+        if idx == -1 or "</think>" not in response:
+            rewards.append(0.0)
+            continue
+        else:
+            response = response[idx + len("Answer:") :]
         if answer in response:
             rewards.append(1.0)
         else:
