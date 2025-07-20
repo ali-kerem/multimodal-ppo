@@ -370,6 +370,13 @@ class MultimodalPPOTrainer(PPOTrainer):
             with torch.no_grad():
                 queries = {k: v.to(device) for k, v in data["inputs"].items()}
                 context_length = queries["input_ids"].shape[1]
+                responses = []
+                postprocessed_responses = []
+                logprobs = []
+                ref_logprobs = []
+                scores = []
+                sequence_lengths = []
+                values = []
                 with unwrap_model_for_generation(
                     self.model, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
                 ) as unwrapped_model:
