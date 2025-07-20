@@ -363,6 +363,8 @@ class MultimodalPPOTrainer(PPOTrainer):
         if self.is_deepspeed_enabled:
             self.deepspeed = self.model
             self.model_wrapped = self.model
+        
+        self.generate_completions(sampling=True)
 
         for update in range(1, args.num_total_batches + 1):
             self.state.episode += 1 * args.batch_size
@@ -641,6 +643,13 @@ class MultimodalPPOTrainer(PPOTrainer):
                 returns,
             )
             empty_cache()
+            # Check if an epoch has ended
+            current_epoch_fractional = self.state.episode / self.train_dataset_len
+            previous_epoch_fractional = (self.state.episode - args.batch_size) / self.train_dataset_len
+            if math.floor(current_epoch_fractional) > math.floor(previous_epoch_fractional):
+                epoch = math.floor(current_epoch_fractional)
+                self.accelerator.print(f"--- End of epoch {epoch} ---")
+                self.generate_completions(sampling=False)
 
         # HF trainer specifics
         self.control = self.callback_handler.on_train_end(args, self.state, self.control)
@@ -660,8 +669,10 @@ class MultimodalPPOTrainer(PPOTrainer):
             pad_token_id=processing_class.tokenizer.pad_token_id,
             eos_token_id=processing_class.tokenizer.eos_token_id,
         )
-
-        table = defaultdict(list)
+        if sampling:
+            samples = []
+        else:
+            scores = []
         with unwrap_model_for_generation(
             self.model, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
         ) as unwrapped_model:
@@ -680,35 +691,36 @@ class MultimodalPPOTrainer(PPOTrainer):
                         postprocessed_response = truncate_response(
                             self.stop_token_id, processing_class.tokenizer.pad_token_id, response
                         )
-                    table["query"].extend(
-                        gather_object(processing_class.batch_decode(query["input_ids"], skip_special_tokens=True))
-                    )
-                    table["model response"].extend(
-                        gather_object(processing_class.batch_decode(postprocessed_response))
-                    )
-
-                    response_text = processing_class.batch_decode(response)
-                    score = get_reward(
-                        response_text, batch["answer"]
-                    )
-                    table["score"].extend(gather_object(score.tolist()))
-                    table["answer"].extend(gather_object(batch["answer"]))
+                    
+                    if sampling:
+                        queries = gather_object(processing_class.batch_decode(query["input_ids"], skip_special_tokens=True))
+                        model_responses = gather_object(processing_class.batch_decode(postprocessed_response, skip_special_tokens=True))
+                        answers = gather_object(batch["answer"])
+                        scores = gather_object(get_reward(model_responses, answers))
+                        for i in range(len(query["input_ids"])):
+                            samples.append({
+                                "query": queries[i],
+                                "model response": model_responses[i],
+                                "answer": answers[i],
+                                "score": scores[i].item(),
+                            })
+       
+                    else:
+                        response_text = processing_class.batch_decode(response)
+                        score = get_reward(
+                            response_text, batch["answer"], reward_formatting=False
+                        )
+                        scores.append(score)
 
                 if sampling:
                     break
-        df = pd.DataFrame(table)
+        if sampling:
+            save_dir = os.path.join(self.args.output_dir, self.args.run_name, "completions")
+            os.makedirs(save_dir, exist_ok=True)
+            with open(os.path.join(save_dir, f"episode_{self.state.episode}.json"), "w") as f:
+                json.dump(samples, f, indent=4)
 
-        if self.accelerator.is_main_process:
-            if is_rich_available():
-                print_rich_table(df.iloc[0 : 0 + 5])
-            if "wandb" in args.report_to:
-                import wandb
-
-                if wandb.run is not None:
-                    wandb.log({"completions": wandb.Table(dataframe=df)})
-
-            if "comet_ml" in args.report_to:
-                log_table_to_comet_experiment(
-                    name="completions.csv",
-                    table=df,
-                )
+            self.accelerator.print(f"Saved {len(samples)} samples to {os.path.join(self.args.output_dir, 'completions', f'episode_{self.state.episode}.json')}")
+        else:
+            avg_score = torch.stack(scores).mean()
+            self.log({"validation average score": avg_score.item()})
