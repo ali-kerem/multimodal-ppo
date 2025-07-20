@@ -44,12 +44,12 @@ def main():
 
     optimizer = torch.optim.AdamW(actor_model.parameters(), lr=1e-5)
 
-    data_collator = Geometry3KDataCollator(tokenizer=actor_processor)
+    data_collator = Geometry3KDataCollator(processor=actor_processor)
 
     # 4. Initialize PPO Config
     ppo_config = {"mini_batch_size": 1, "batch_size": 1, "report_to": "none"}
-    config = CustomPPOConfig(**ppo_config)
-    accelerator = Accelerator(gradient_accumulation_steps=config.gradient_accumulation_steps)
+    accelerator = Accelerator(gradient_accumulation_steps=ppo_config["gradient_accumulation_steps"])
+    config = CustomPPOConfig(accelerator=accelerator, **ppo_config)
 
     ppo_trainer = MultimodalPPOTrainer(args=config,
                              model=actor_model,

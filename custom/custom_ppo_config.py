@@ -5,6 +5,10 @@ from accelerate import PartialState
 
 @dataclass
 class CustomPPOConfig(PPOConfig):
+    def __init__(self, accelerator, **kwargs):
+        self.accelerator = accelerator
+        super().__init__(**kwargs)
+
     def __post_init__(self):
         # The TRL PPOConfig inherits from TrainingArguments, which has a __post_init__
         # that conflicts with `accelerate launch`. We override it here to prevent
@@ -22,4 +26,4 @@ class CustomPPOConfig(PPOConfig):
             self.logging_dir = os.path.join(self.output_dir, default_logdir())
 
         # Manually set the distributed state that Trainer needs
-        self.distributed_state = PartialState()
+        self.distributed_state = self.accelerator.state # Should keep like this?
