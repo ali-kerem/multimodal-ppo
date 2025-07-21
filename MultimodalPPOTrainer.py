@@ -15,6 +15,7 @@
 import gc
 import math
 import os
+import json
 import textwrap
 import time
 from collections import defaultdict
@@ -334,6 +335,7 @@ class MultimodalPPOTrainer(PPOTrainer):
         vf_clipfrac_stats = torch.zeros(stats_shape, device=device)
         entropy_stats = torch.zeros(stats_shape, device=device)
         ratio_stats = torch.zeros(stats_shape, device=device)
+        grad_norm_stats = torch.zeros(stats_shape, device=device)
         model.train()
 
         # trainer state initialization
@@ -549,6 +551,12 @@ class MultimodalPPOTrainer(PPOTrainer):
                             pg_loss = masked_mean(pg_loss_max, ~padding_mask[micro_batch_inds])
                             loss = pg_loss + args.vf_coef * vf_loss
                             accelerator.backward(loss)
+                            if self.is_deepspeed_enabled:
+                                grad_norm = self.accelerator.deepspeed_engine_wrapped.engine.get_global_grad_norm()
+                                if hasattr(grad_norm, "item"):
+                                    grad_norm = grad_norm.item()
+                            else:
+                                grad_norm = 0
                             optimizer.step()
                             optimizer.zero_grad()
                             with torch.no_grad():
@@ -569,6 +577,7 @@ class MultimodalPPOTrainer(PPOTrainer):
                                 )
                                 entropy_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = entropy.mean()
                                 ratio_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = ratio.mean()
+                                grad_norm_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = grad_norm
                         gradient_accumulation_idx += 1
                     minibatch_idx += 1
                     # del everything and empty cache
@@ -587,6 +596,22 @@ class MultimodalPPOTrainer(PPOTrainer):
                 mean_non_score_reward = non_score_reward.sum(1).mean()
                 rlhf_reward = mean_non_score_reward + scores.mean()
                 eps = int(self.state.episode / (time.time() - start_time))
+
+                # Extended metrics
+                mean_sequence_length = sequence_lengths.float().mean()
+                mean_reward = rewards.sum(1).mean()
+                std_reward = rewards.sum(1).std()
+                mean_adv = advantages.mean()
+                std_adv = advantages.std()
+                mean_returns = returns.mean()
+                std_returns = returns.std()
+                # Filter out padding
+                mean_rollout_values = values[values != 0].mean()
+                std_scores = scores.std()
+                # for logprobs, we should ignore the invalid ones
+                mean_logprobs = logprobs[logprobs != INVALID_LOGPROB].mean()
+                mean_ref_logprobs = ref_logprobs[ref_logprobs != INVALID_LOGPROB].mean()
+
                 metrics = {}
                 metrics["eps"] = eps
                 metrics["objective/kl"] = self.accelerator.gather_for_metrics(mean_kl).mean().item()
@@ -595,13 +620,30 @@ class MultimodalPPOTrainer(PPOTrainer):
                     self.accelerator.gather_for_metrics(mean_non_score_reward).mean().item()
                 )
                 metrics["objective/rlhf_reward"] = self.accelerator.gather_for_metrics(rlhf_reward).mean().item()
-                metrics["objective/scores"] = self.accelerator.gather_for_metrics(scores.mean()).mean().item()
+                metrics["objective/scores_mean"] = self.accelerator.gather_for_metrics(scores.mean()).mean().item()
+                metrics["objective/scores_std"] = self.accelerator.gather_for_metrics(std_scores).mean().item()
+
+                # New metrics
+                metrics["reward/mean"] = self.accelerator.gather_for_metrics(mean_reward).mean().item()
+                metrics["reward/std"] = self.accelerator.gather_for_metrics(std_reward).mean().item()
+                metrics["advantages/mean"] = self.accelerator.gather_for_metrics(mean_adv).mean().item()
+                metrics["advantages/std"] = self.accelerator.gather_for_metrics(std_adv).mean().item()
+                metrics["returns/mean"] = self.accelerator.gather_for_metrics(mean_returns).mean().item()
+                metrics["returns/std"] = self.accelerator.gather_for_metrics(std_returns).mean().item()
+                metrics["val/rollout_values_mean"] = self.accelerator.gather_for_metrics(mean_rollout_values).mean().item()
+                metrics["policy/logprobs_mean"] = self.accelerator.gather_for_metrics(mean_logprobs).mean().item()
+                metrics["policy/ref_logprobs_mean"] = self.accelerator.gather_for_metrics(mean_ref_logprobs).mean().item()
+                metrics["info/sequence_length_mean"] = (
+                    self.accelerator.gather_for_metrics(mean_sequence_length).mean().item()
+                )
+
                 metrics["policy/approxkl_avg"] = self.accelerator.gather_for_metrics(approxkl_stats).mean().item()
                 metrics["policy/clipfrac_avg"] = self.accelerator.gather_for_metrics(pg_clipfrac_stats).mean().item()
                 metrics["loss/policy_avg"] = self.accelerator.gather_for_metrics(pg_loss_stats).mean().item()
                 metrics["loss/value_avg"] = self.accelerator.gather_for_metrics(vf_loss_stats).mean().item()
                 metrics["val/clipfrac_avg"] = self.accelerator.gather_for_metrics(vf_clipfrac_stats).mean().item()
                 metrics["policy/entropy_avg"] = self.accelerator.gather_for_metrics(entropy_stats).mean().item()
+                metrics["policy/grad_norm"] = self.accelerator.gather_for_metrics(grad_norm_stats).mean().item()
                 metrics["val/ratio"] = self.accelerator.gather_for_metrics(ratio_stats).mean().item()
                 metrics["val/ratio_var"] = self.accelerator.gather_for_metrics(ratio_stats).var().item()
                 metrics["val/num_eos_tokens"] = (responses == processing_class.tokenizer.eos_token_id).sum().item()
